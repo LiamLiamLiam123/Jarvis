@@ -58,7 +58,8 @@ const FISH_KEY = "sk-fish-VsntcLIei8ExHKW0qpvqsu_LgnZSqmBmUL1gVq79mt4";
 // Fish Audio voice (the ID at the end of a fish.audio/m/<id> link).
 // Alternatives: 21e5507c5d064ffcbc9c799940823139 (deep male), a3e001478c8a474f9c5dfc585132f94b (robotic sci-fi)
 const FISH_VOICE = "3182cd218d4b4a58b8a2b383d553a2b1";
-const MODEL = "llama-3.1-8b-instant";      // free Groq chat model (or "llama-3.3-70b-versatile")
+// Free Groq chat models, tried in order (Groq retired the Llama 3.x models on free tier in Aug 2026)
+const MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 const FISH_MODEL = "s2.1-pro-free"; // Fish's free developer-tier model
 const STT_MODEL = "whisper-large-v3-turbo"; // free Groq speech-to-text
 
@@ -146,14 +147,19 @@ async function transcribe(blob){
 async function ask(q){
   caption.textContent = q;
   history.push({ role:"user", content:q });
-  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method:"POST",
-    headers:{ "Authorization":"Bearer " + GROQ_KEY, "Content-Type":"application/json" },
-    body: JSON.stringify({ model: MODEL, temperature: .7, max_tokens: 300,
-      messages: [{ role:"system", content:SYSTEM }, ...history.slice(-12)] })
-  });
-  if (!r.ok) throw new Error("Groq error " + r.status);
-  const reply = (await r.json()).choices[0].message.content.trim();
+  let reply = "", lastErr = "";
+  for (const model of MODELS){
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method:"POST",
+      headers:{ "Authorization":"Bearer " + GROQ_KEY, "Content-Type":"application/json" },
+      body: JSON.stringify({ model, temperature: .7, max_completion_tokens: 1000, reasoning_effort: "low",
+        messages: [{ role:"system", content:SYSTEM }, ...history.slice(-12)] })
+    });
+    if (r.ok){ reply = ((await r.json()).choices[0].message.content || "").trim(); if (reply) break; lastErr = "empty reply"; continue; }
+    lastErr = "Groq " + r.status + " " + (await r.text()).slice(0, 120);
+    if (r.status !== 404 && r.status !== 400) break;   // only try the next model if this one is unavailable
+  }
+  if (!reply){ history.pop(); throw new Error(lastErr); }
   history.push({ role:"assistant", content:reply });
   caption.textContent = reply;
   await speak(reply);

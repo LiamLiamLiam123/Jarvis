@@ -59,6 +59,7 @@ const FISH_KEY = "sk-fish-VsntcLIei8ExHKW0qpvqsu_LgnZSqmBmUL1gVq79mt4";
 // Alternatives: 21e5507c5d064ffcbc9c799940823139 (deep male), a3e001478c8a474f9c5dfc585132f94b (robotic sci-fi)
 const FISH_VOICE = "3182cd218d4b4a58b8a2b383d553a2b1";
 const MODEL = "llama-3.1-8b-instant";      // free Groq chat model (or "llama-3.3-70b-versatile")
+const FISH_MODEL = "s2.1-pro-free"; // Fish's free developer-tier model
 const STT_MODEL = "whisper-large-v3-turbo"; // free Groq speech-to-text
 
 const SYSTEM = "You are J.A.R.V.I.S., a calm, witty, highly capable AI butler. Address the user as 'sir' occasionally. You are speaking aloud, so answer in 1-3 short sentences unless asked for detail. Plain spoken text only: no markdown, lists, symbols or emoji.";
@@ -67,7 +68,7 @@ const stage = $("stage"), label = $("label"), caption = $("caption");
 const history = [];
 let stream = null, ctx = null, analyser = null, buf = null, micLive = false;
 let mr = null, chunks = [], recording = false, voicedMs = 0, lastVoice = 0, recStart = 0, loud = 0, floor = 0.01;
-let busy = false, speaking = false, audio = null;
+let busy = false, speaking = false, audio = null, pending = null;
 
 function setState(s, t){ stage.className = s; label.textContent = t; }
 function idleState(){ setState("listening", "Listening"); }
@@ -90,12 +91,14 @@ async function startMic(){
   analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
   ctx.createMediaStreamSource(stream).connect(analyser);
   buf = new Float32Array(analyser.fftSize);
+  ctx.resume().catch(() => {});
   micLive = true; idleState();
   setInterval(tick, 50);
 }
 
 /* Simple voice-activity detection: record when you start talking, send when you pause. */
 function tick(){
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   if (busy || speaking) return;
   analyser.getFloatTimeDomainData(buf);
   let sum = 0; for (const v of buf) sum += v * v;
@@ -164,17 +167,26 @@ async function speak(text){
     if (FISH_VOICE) body.reference_id = FISH_VOICE;
     const r = await fetch("https://api.fish.audio/v1/tts", {
       method:"POST",
-      headers:{ "Authorization":"Bearer " + FISH_KEY, "Content-Type":"application/json" },
+      headers:{ "Authorization":"Bearer " + FISH_KEY, "Content-Type":"application/json", "model": FISH_MODEL },
       body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error("Fish " + r.status);
+    if (!r.ok) throw new Error("Fish Audio " + r.status + " " + (await r.text()).slice(0, 140));
     audio = new Audio(URL.createObjectURL(await r.blob()));
     audio.onended = done;
-    await audio.play();
+    try { await audio.play(); }
+    catch(err){
+      if (err.name !== "NotAllowedError") throw err;
+      pending = audio; setState("speaking", "Press any key to hear Jarvis"); return;
+    }
   } catch(e){
+    // Show why Fish failed (a TypeError here usually means the browser blocked the request)
+    const why = e instanceof TypeError ? "Fish Audio request blocked or offline" : e.message;
+    caption.textContent = text + "\n[" + why + ". Using the browser voice.]";
     if ("speechSynthesis" in window){   // fall back to the browser voice
       const u = new SpeechSynthesisUtterance(text);
-      u.onend = done; speechSynthesis.speak(u);
+      const v = speechSynthesis.getVoices();
+      u.voice = v.find(x => /en-GB/i.test(x.lang) && /daniel|male|arthur/i.test(x.name)) || v.find(x => /en-GB/i.test(x.lang)) || null;
+      u.onend = u.onerror = done; speechSynthesis.speak(u);
     } else done();
   }
 }
@@ -189,7 +201,11 @@ $("orb").onclick = async () => {
   }
 };
 // Browsers only allow sound after a click or key press, so the first one also wakes the audio engine
-addEventListener("pointerdown", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, { once:true });
+function unlock(){
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  if (pending){ const a = pending; pending = null; setState("speaking", "Speaking"); a.play().catch(() => { speaking = false; idleState(); }); }
+}
+["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, unlock));
 
 startMic(); // try to open the microphone as soon as the page loads
 </script>

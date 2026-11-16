@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J.A.R.V.I.S</title>
+<style>
+:root{--bg:#0a0a0a;--ink:#d6e4ee;--dim:#7d8a94;--cyan:#38b6f5;--line:rgba(56,182,245,.07)}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;
+background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:56px 56px}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px}
+h1{font:700 18px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.18em;color:var(--cyan)}
+.status{display:flex;align-items:center;gap:8px;font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;background:#4caf50}
+.status.err .dot{background:#e5534b}
+main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:0 24px}
+.orb{position:relative;width:152px;height:152px;border-radius:50%;background:#0b0b0b;border:0;cursor:pointer;
+box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:grid;place-items:center;transition:box-shadow .3s}
+.orb:focus-visible{outline:2px solid var(--cyan);outline-offset:6px}
+.ring{position:absolute;inset:24px;border-radius:50%;border:1px solid rgba(56,182,245,.55);animation:spin 9s linear infinite}
+.ring::before,.ring::after{content:"";position:absolute;left:50%;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--cyan)}
+.ring::before{top:-4px}.ring::after{bottom:-4px}
+.core{width:64px;height:64px;border-radius:50%;background:#16232b;display:grid;place-items:center}
+.core svg{width:30px;height:30px;stroke:var(--cyan);fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.label{font-size:12px;color:var(--dim)}
+.caption{max-width:520px;text-align:center;color:#5d6a73;font-size:13px;min-height:40px}
+.listening .orb{animation:breathe 3.2s ease-in-out infinite}
+.hearing .orb{animation:pulse .9s ease-in-out infinite;box-shadow:0 0 0 1px #6fd3ff,0 0 60px rgba(111,211,255,.7)}
+.thinking .ring{animation-duration:1.6s}
+.speaking .orb{animation:pulse .6s ease-in-out infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{transform:scale(1.07)}}
+@keyframes breathe{50%{box-shadow:0 0 0 1px rgba(56,182,245,.4),0 0 54px rgba(56,182,245,.6)}}
+@media (prefers-reduced-motion:reduce){.ring,.orb{animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>J.A.R.V.I.S</h1>
+  <div class="status" id="status"><span class="dot"></span><span id="online">Online</span></div>
+</header>
+
+<main id="stage" class="idle">
+  <button class="orb" id="orb" aria-label="Activate Jarvis, or interrupt while he is speaking">
+    <span class="ring"></span>
+    <span class="core"><svg viewBox="0 0 24 24"><path d="M12 5v14M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 4 3 3 0 0 0 1 4 3 3 0 0 0 4 3 2 2 0 0 0 3-1M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 4 3 3 0 0 1-1 4 3 3 0 0 1-4 3 2 2 0 0 1-3-1"/></svg></span>
+  </button>
+  <div class="label" id="label" aria-live="polite">Starting microphone</div>
+  <div class="caption" id="caption"></div>
+</main>
+
+<script>
+/* Anyone who can open this file can read these keys. */
+const GROQ_KEY = "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";
+const FISH_KEY = "sk-fish-VsntcLIei8ExHKW0qpvqsu_LgnZSqmBmUL1gVq79mt4";
+// Fish Audio voice (the ID at the end of a fish.audio/m/<id> link).
+// Alternatives: 21e5507c5d064ffcbc9c799940823139 (deep male), a3e001478c8a474f9c5dfc585132f94b (robotic sci-fi)
+const FISH_VOICE = "3182cd218d4b4a58b8a2b383d553a2b1";
+const MODEL = "llama-3.1-8b-instant";      // free Groq chat model (or "llama-3.3-70b-versatile")
+const STT_MODEL = "whisper-large-v3-turbo"; // free Groq speech-to-text
+
+const SYSTEM = "You are J.A.R.V.I.S., a calm, witty, highly capable AI butler. Address the user as 'sir' occasionally. You are speaking aloud, so answer in 1-3 short sentences unless asked for detail. Plain spoken text only: no markdown, lists, symbols or emoji.";
+const $ = id => document.getElementById(id);
+const stage = $("stage"), label = $("label"), caption = $("caption");
+const history = [];
+let stream = null, ctx = null, analyser = null, buf = null, micLive = false;
+let mr = null, chunks = [], recording = false, voicedMs = 0, lastVoice = 0, recStart = 0, loud = 0, floor = 0.01;
+let busy = false, speaking = false, audio = null;
+
+function setState(s, t){ stage.className = s; label.textContent = t; }
+function idleState(){ setState("listening", "Listening"); }
+function fail(msg){
+  busy = false; speaking = false;
+  $("status").classList.add("err"); $("online").textContent = "Error";
+  setState("idle", msg);
+  if (micLive) setTimeout(() => { $("status").classList.remove("err"); $("online").textContent = "Online"; if (!busy && !speaking) idleState(); }, 3500);
+}
+
+/* ---- Microphone: opened once and kept open, so the browser asks only once ---- */
+async function startMic(){
+  if (micLive) { if (ctx && ctx.state === "suspended") ctx.resume(); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+  } catch(e){
+    return setState("idle", e.name === "NotAllowedError" ? "Microphone blocked. Allow it in the address bar, then tap the orb" : "No microphone found");
+  }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  buf = new Float32Array(analyser.fftSize);
+  micLive = true; idleState();
+  setInterval(tick, 50);
+}
+
+/* Simple voice-activity detection: record when you start talking, send when you pause. */
+function tick(){
+  if (busy || speaking) return;
+  analyser.getFloatTimeDomainData(buf);
+  let sum = 0; for (const v of buf) sum += v * v;
+  const rms = Math.sqrt(sum / buf.length), now = performance.now();
+  const threshold = Math.max(0.02, floor * 3.5);
+  if (rms > threshold){
+    lastVoice = now; voicedMs += 50; loud++;
+    if (!recording && loud >= 2) startRec();
+  } else {
+    loud = 0;
+    if (!recording) floor = floor * 0.97 + rms * 0.03;
+  }
+  if (recording && (now - lastVoice > 900 || now - recStart > 25000)) stopRec();
+}
+function startRec(){
+  chunks = []; voicedMs = 100; recording = true; recStart = performance.now();
+  mr = new MediaRecorder(stream);
+  mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mr.onstop = () => {
+    const blob = new Blob(chunks, { type: mr.mimeType });
+    if (voicedMs >= 350) transcribe(blob); else if (!busy && !speaking) idleState();
+  };
+  mr.start(); setState("hearing", "Hearing you");
+}
+function stopRec(){ recording = false; if (mr && mr.state === "recording") mr.stop(); }
+
+async function transcribe(blob){
+  busy = true; setState("thinking", "Thinking");
+  try {
+    const fd = new FormData();
+    fd.append("file", blob, "speech." + (blob.type.includes("mp4") ? "mp4" : "webm"));
+    fd.append("model", STT_MODEL); fd.append("language", "en"); fd.append("temperature", "0");
+    const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method:"POST", headers:{ "Authorization":"Bearer " + GROQ_KEY }, body: fd });
+    if (!r.ok) throw new Error("Speech recognition error " + r.status);
+    const text = ((await r.json()).text || "").trim();
+    // Ignore noise and Whisper's habitual phantom phrases on near-silence
+    if (text.replace(/[^a-z]/gi, "").length < 2 || /^(thank you|thanks for watching|you)\W*$/i.test(text)){
+      busy = false; return idleState();
+    }
+    await ask(text);
+  } catch(e){ fail(e.message); }
+}
+
+async function ask(q){
+  caption.textContent = q;
+  history.push({ role:"user", content:q });
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method:"POST",
+    headers:{ "Authorization":"Bearer " + GROQ_KEY, "Content-Type":"application/json" },
+    body: JSON.stringify({ model: MODEL, temperature: .7, max_tokens: 300,
+      messages: [{ role:"system", content:SYSTEM }, ...history.slice(-12)] })
+  });
+  if (!r.ok) throw new Error("Groq error " + r.status);
+  const reply = (await r.json()).choices[0].message.content.trim();
+  history.push({ role:"assistant", content:reply });
+  caption.textContent = reply;
+  await speak(reply);
+}
+
+async function speak(text){
+  speaking = true; busy = false; setState("speaking", "Speaking");
+  const done = () => { speaking = false; voicedMs = 0; loud = 0; idleState(); };
+  try {
+    const body = { text, format:"mp3", latency:"balanced" };
+    if (FISH_VOICE) body.reference_id = FISH_VOICE;
+    const r = await fetch("https://api.fish.audio/v1/tts", {
+      method:"POST",
+      headers:{ "Authorization":"Bearer " + FISH_KEY, "Content-Type":"application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error("Fish " + r.status);
+    audio = new Audio(URL.createObjectURL(await r.blob()));
+    audio.onended = done;
+    await audio.play();
+  } catch(e){
+    if ("speechSynthesis" in window){   // fall back to the browser voice
+      const u = new SpeechSynthesisUtterance(text);
+      u.onend = done; speechSynthesis.speak(u);
+    } else done();
+  }
+}
+
+/* Orb: starts the mic if it isn't running yet; interrupts Jarvis while he is speaking. */
+$("orb").onclick = async () => {
+  if (!micLive) return startMic();
+  if (speaking){
+    if (audio){ audio.onended = null; audio.pause(); audio = null; }
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    speaking = false; voicedMs = 0; loud = 0; idleState();
+  }
+};
+// Browsers only allow sound after a click or key press, so the first one also wakes the audio engine
+addEventListener("pointerdown", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, { once:true });
+
+startMic(); // try to open the microphone as soon as the page loads
+</script>
+</body>
+</html>

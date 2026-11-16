@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>J.A.R.V.I.S</title>
+<meta name="theme-color" content="#0a0a0a">
 <style>
 :root{--bg:#0a0a0a;--ink:#d6e4ee;--dim:#7d8a94;--cyan:#38b6f5;--line:rgba(56,182,245,.07)}
 *{box-sizing:border-box;margin:0}
@@ -47,17 +48,17 @@ box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:
     <span class="ring"></span>
     <span class="core"><svg viewBox="0 0 24 24"><path d="M12 5v14M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 4 3 3 0 0 0 1 4 3 3 0 0 0 4 3 2 2 0 0 0 3-1M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 4 3 3 0 0 1-1 4 3 3 0 0 1-4 3 2 2 0 0 1-3-1"/></svg></span>
   </button>
-  <div class="label" id="label" aria-live="polite">Tap anywhere to wake Jarvis</div>
+  <div class="label" id="label" aria-live="polite">Starting microphone</div>
   <div class="caption" id="caption"></div>
 </main>
 
 <script>
 /* Anyone who can open this file can read these keys. */
-/* No keys live in this file, so it is safe in a public GitHub repo. On first use the page asks for your
-   Groq and Fish Audio keys and keeps them only in this browser (localStorage). */
+/* Your API keys. Anyone who can open this page can read them. */
+const KEYS = { groq: "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", fish: "sk-fish-VsntcLIei8ExHKW0qpvqsu_LgnZSqmBmUL1gVq79mt4" };
 const CORS_PROXY = "https://corsproxy.io/?url="; // Fish Audio blocks direct browser calls, so TTS goes through this
 function key(name){
-  let k = localStorage.getItem("jarvis-" + name);
+  let k = KEYS[name] || localStorage.getItem("jarvis-" + name);
   if (!k){
     k = (prompt(name === "groq" ? "Paste your Groq API key (kept only in this browser):" : "Paste your Fish Audio API key (kept only in this browser):") || "").trim();
     if (k) localStorage.setItem("jarvis-" + name, k);
@@ -223,8 +224,34 @@ function unlock(){
 }
 ["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, unlock));
 
-// A website needs one tap or key press before the mic and sound can start; after that it is hands-free.
-["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, () => { if (!micLive){ key("groq"); key("fish"); startMic(); } }, { once:true }));
+// Open the microphone as soon as the page loads (no tap needed). If the browser holds it back, the first tap or key press starts it.
+startMic();
+["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, () => { if (!micLive) startMic(); }, { once:true }));
+
+/* Makes the page installable as an app, all from this one file. An installed app may play sound without a tap. */
+(function(){
+  const icon = n => {
+    const c = document.createElement("canvas"); c.width = c.height = n; const g = c.getContext("2d"), m = n / 2;
+    g.fillStyle = "#0a0a0a"; g.fillRect(0, 0, n, n);
+    g.shadowColor = "rgba(56,182,245,.8)"; g.shadowBlur = n * .08;
+    g.fillStyle = "#0b0b0b"; g.strokeStyle = "#38b6f5"; g.lineWidth = n * .012;
+    g.beginPath(); g.arc(m, m, n * .28, 0, 7); g.fill(); g.stroke(); g.shadowBlur = 0;
+    g.lineWidth = n * .01; g.beginPath(); g.arc(m, m, n * .19, 0, 7); g.stroke();
+    g.fillStyle = "#38b6f5";
+    for (const y of [m - n * .19, m + n * .19]){ g.beginPath(); g.arc(m, y, n * .025, 0, 7); g.fill(); }
+    g.fillStyle = "#16232b"; g.beginPath(); g.arc(m, m, n * .11, 0, 7); g.fill();
+    g.fillStyle = "#38b6f5"; g.beginPath(); g.arc(m, m, n * .035, 0, 7); g.fill();
+    return c.toDataURL("image/png");
+  };
+  const base = location.href.split("#")[0].split("?")[0];
+  const manifest = { name:"J.A.R.V.I.S", short_name:"Jarvis", start_url: base, scope: base.replace(/[^/]*$/, ""),
+    display:"standalone", background_color:"#0a0a0a", theme_color:"#0a0a0a",
+    icons:[{ src: icon(192), sizes:"192x192", type:"image/png" }, { src: icon(512), sizes:"512x512", type:"image/png" }] };
+  const link = document.createElement("link"); link.rel = "manifest";
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type:"application/manifest+json" }));
+  document.head.appendChild(link);
+  const fav = document.createElement("link"); fav.rel = "icon"; fav.href = icon(64); document.head.appendChild(fav);
+})();
 </script>
 </body>
 </html>

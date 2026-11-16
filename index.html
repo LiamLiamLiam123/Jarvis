@@ -55,6 +55,7 @@ box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:
 /* Anyone who can open this file can read these keys. */
 const GROQ_KEY = "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";
 const FISH_KEY = "sk-fish-VsntcLIei8ExHKW0qpvqsu_LgnZSqmBmUL1gVq79mt4";
+const TTS_URL = "http://localhost:8765/tts"; // local helper (server.py) that talks to Fish Audio for us
 // Fish Audio voice (the ID at the end of a fish.audio/m/<id> link).
 // Alternatives: 21e5507c5d064ffcbc9c799940823139 (deep male), a3e001478c8a474f9c5dfc585132f94b (robotic sci-fi)
 const FISH_VOICE = "3182cd218d4b4a58b8a2b383d553a2b1";
@@ -169,13 +170,9 @@ async function speak(text){
   speaking = true; busy = false; setState("speaking", "Speaking");
   const done = () => { speaking = false; voicedMs = 0; loud = 0; idleState(); };
   try {
-    const body = { text, format:"mp3", latency:"balanced" };
+    const body = { text, format:"mp3", latency:"balanced", model: FISH_MODEL, key: FISH_KEY };
     if (FISH_VOICE) body.reference_id = FISH_VOICE;
-    const r = await fetch("https://api.fish.audio/v1/tts", {
-      method:"POST",
-      headers:{ "Authorization":"Bearer " + FISH_KEY, "Content-Type":"application/json", "model": FISH_MODEL },
-      body: JSON.stringify(body)
-    });
+    const r = await fetch(TTS_URL, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
     if (!r.ok) throw new Error("Fish Audio " + r.status + " " + (await r.text()).slice(0, 140));
     audio = new Audio(URL.createObjectURL(await r.blob()));
     audio.onended = done;
@@ -186,7 +183,7 @@ async function speak(text){
     }
   } catch(e){
     // Show why Fish failed (a TypeError here usually means the browser blocked the request)
-    const why = e instanceof TypeError ? "Fish Audio request blocked or offline" : e.message;
+    const why = e instanceof TypeError ? "Voice helper not running. Start it with launch-jarvis.command" : e.message;
     caption.textContent = text + "\n[" + why + ". Using the browser voice.]";
     if ("speechSynthesis" in window){   // fall back to the browser voice
       const u = new SpeechSynthesisUtterance(text);

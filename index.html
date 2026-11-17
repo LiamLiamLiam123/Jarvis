@@ -67,8 +67,8 @@ function key(name){
 }
 const badKey = name => localStorage.removeItem("jarvis-" + name); // so a wrong key is asked for again
 // Fish Audio voice (the ID at the end of a fish.audio/m/<id> link).
-// Alternatives: 21e5507c5d064ffcbc9c799940823139 (deep male), a3e001478c8a474f9c5dfc585132f94b (robotic sci-fi)
-const FISH_VOICE = "3182cd218d4b4a58b8a2b383d553a2b1";
+// Other Jarvis voices to try: 612b878b113047d9a770c069c8b4fdfe (Jarvis MCU J.A.R.V.I.S), 3182cd218d4b4a58b8a2b383d553a2b1
+const FISH_VOICE = "2e0938cc92184871b2728776c48c6ae7"; // Jarvis M.C.U (English Voice - Remake)
 // Free Groq chat models, tried in order (Groq retired the Llama 3.x models on free tier in Aug 2026)
 const MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 const FISH_MODEL = "s2.1-pro-free"; // Fish's free developer-tier model
@@ -178,31 +178,59 @@ async function ask(q){
   await speak(reply);
 }
 
+/* ---- Fish Audio voice ----
+   Fish's API refuses calls from web pages (no CORS), so it needs a tiny relay. Use your own free Cloudflare Worker:
+   dash.cloudflare.com > Workers & Pages > Create > Worker > Deploy > Edit code > paste the code below > Deploy,
+   then paste the *.workers.dev address into FISH_PROXY.
+
+   export default { async fetch(req) {
+     const cors = { "Access-Control-Allow-Origin":"*", "Access-Control-Allow-Headers":"*", "Access-Control-Allow-Methods":"POST, OPTIONS" };
+     if (req.method === "OPTIONS") return new Response(null, { status:204, headers:cors });
+     const r = await fetch("https://api.fish.audio/v1/tts", { method:"POST", body:req.body, headers:{
+       "Authorization":req.headers.get("Authorization"), "Content-Type":"application/json", "model":req.headers.get("model") || "s2.1-pro-free" } });
+     return new Response(r.body, { status:r.status, headers:{ ...cors, "Content-Type":r.headers.get("Content-Type") || "audio/mpeg" } });
+   } }
+*/
+const FISH_PROXY = "https://jarvis.daddystephenson34.workers.dev/"; // <- your Cloudflare Worker address, e.g. "https://jarvis-fish.yourname.workers.dev"
+let speakId = 0;
+
+async function voiceBlob(text){
+  const url = FISH_PROXY || (CORS_PROXY + encodeURIComponent("https://api.fish.audio/v1/tts")); // corsproxy.io only works for development
+  const body = { text, format:"mp3", latency:"balanced" };
+  if (FISH_VOICE) body.reference_id = FISH_VOICE;
+  const r = await fetch(url, { method:"POST",
+    headers:{ "Authorization":"Bearer " + key("fish"), "Content-Type":"application/json", "model": FISH_MODEL }, body: JSON.stringify(body) });
+  if (r.status === 401) badKey("fish");
+  if (!r.ok) throw new Error("Fish Audio " + r.status + " " + (await r.text()).slice(0, 140));
+  return r.blob();
+}
+function playBlob(blob){
+  return new Promise((res, rej) => {
+    const a = new Audio(URL.createObjectURL(blob)); audio = a;
+    a.onended = res; a.onerror = () => rej(new Error("Audio playback failed"));
+    a.play().catch(err => {
+      if (err.name === "NotAllowedError"){ pending = a; setState("speaking", "Press any key to hear Jarvis"); }
+      else rej(err);
+    });
+  });
+}
 async function speak(text){
+  const my = ++speakId;
   speaking = true; busy = false; setState("speaking", "Speaking");
-  const done = () => { speaking = false; voicedMs = 0; loud = 0; idleState(); };
+  const done = () => { if (my !== speakId) return; speaking = false; voicedMs = 0; loud = 0; idleState(); };
   try {
-    const body = { text, format:"mp3", latency:"balanced" };
-    if (FISH_VOICE) body.reference_id = FISH_VOICE;
-    const r = await fetch(CORS_PROXY + encodeURIComponent("https://api.fish.audio/v1/tts"), { method:"POST",
-      headers:{ "Authorization":"Bearer " + key("fish"), "Content-Type":"application/json", "model": FISH_MODEL }, body: JSON.stringify(body) });
-    if (r.status === 401) badKey("fish");
-    if (!r.ok) throw new Error("Fish Audio " + r.status + " " + (await r.text()).slice(0, 140));
-    audio = new Audio(URL.createObjectURL(await r.blob()));
-    audio.onended = done;
-    try { await audio.play(); }
-    catch(err){
-      if (err.name !== "NotAllowedError") throw err;
-      pending = audio; setState("speaking", "Press any key to hear Jarvis"); return;
-    }
+    const blob = await voiceBlob(text);
+    if (my !== speakId) return;                    // interrupted
+    await playBlob(blob);
+    done();
   } catch(e){
-    // Show why Fish failed (a TypeError here usually means the browser blocked the request)
-    const why = e instanceof TypeError ? "The CORS proxy blocked the request" : e.message;
+    if (my !== speakId) return;
+    const why = e instanceof TypeError
+      ? (FISH_PROXY ? "Could not reach your Fish proxy" : "No Fish proxy set. Add your Cloudflare Worker address to FISH_PROXY")
+      : e.message;
     caption.textContent = text + "\n[" + why + ". Using the browser voice.]";
-    if ("speechSynthesis" in window){   // fall back to the browser voice
+    if ("speechSynthesis" in window){
       const u = new SpeechSynthesisUtterance(text);
-      const v = speechSynthesis.getVoices();
-      u.voice = v.find(x => /en-GB/i.test(x.lang) && /daniel|male|arthur/i.test(x.name)) || v.find(x => /en-GB/i.test(x.lang)) || null;
       u.onend = u.onerror = done; speechSynthesis.speak(u);
     } else done();
   }
@@ -212,6 +240,7 @@ async function speak(text){
 $("orb").onclick = async () => {
   if (!micLive) return startMic();
   if (speaking){
+    speakId++;
     if (audio){ audio.onended = null; audio.pause(); audio = null; }
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     speaking = false; voicedMs = 0; loud = 0; idleState();

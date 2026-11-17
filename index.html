@@ -6,7 +6,7 @@
 <title>J.A.R.V.I.S</title>
 <meta name="theme-color" content="#0a0a0a">
 <style>
-:root{--bg:#0a0a0a;--ink:#d6e4ee;--dim:#7d8a94;--cyan:#38b6f5;--line:rgba(56,182,245,.07)}
+:root{--bg:#0a0a0a;--ink:#d6e4ee;--dim:#7d8a94;--cyan:#38b6f5;--line:color-mix(in srgb,var(--cyan) 7%,transparent)}
 *{box-sizing:border-box;margin:0}
 html,body{height:100%}
 body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;
@@ -18,9 +18,9 @@ h1{font:700 18px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.18em;colo
 .status.err .dot{background:#e5534b}
 main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:0 24px}
 .orb{position:relative;width:152px;height:152px;border-radius:50%;background:#0b0b0b;border:0;cursor:pointer;
-box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:grid;place-items:center;transition:box-shadow .3s}
+box-shadow:0 0 0 1px color-mix(in srgb,var(--cyan) 25%,transparent),0 0 38px color-mix(in srgb,var(--cyan) 45%,transparent);display:grid;place-items:center;transition:box-shadow .3s}
 .orb:focus-visible{outline:2px solid var(--cyan);outline-offset:6px}
-.ring{position:absolute;inset:24px;border-radius:50%;border:1px solid rgba(56,182,245,.55);animation:spin 9s linear infinite}
+.ring{position:absolute;inset:24px;border-radius:50%;border:1px solid color-mix(in srgb,var(--cyan) 55%,transparent);animation:spin 9s linear infinite}
 .ring::before,.ring::after{content:"";position:absolute;left:50%;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--cyan)}
 .ring::before{top:-4px}.ring::after{bottom:-4px}
 .core{width:64px;height:64px;border-radius:50%;background:#16232b;display:grid;place-items:center}
@@ -33,8 +33,9 @@ box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:
 .speaking .orb{animation:pulse .6s ease-in-out infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulse{50%{transform:scale(1.07)}}
-@keyframes breathe{50%{box-shadow:0 0 0 1px rgba(56,182,245,.4),0 0 54px rgba(56,182,245,.6)}}
+@keyframes breathe{50%{box-shadow:0 0 0 1px color-mix(in srgb,var(--cyan) 40%,transparent),0 0 54px color-mix(in srgb,var(--cyan) 60%,transparent)}}
 @media (prefers-reduced-motion:reduce){.ring,.orb{animation:none!important}}
+.links{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;min-height:20px}.links a{color:var(--cyan);font-size:13px}
 </style>
 </head>
 <body>
@@ -50,6 +51,7 @@ box-shadow:0 0 0 1px rgba(56,182,245,.25),0 0 38px rgba(56,182,245,.45);display:
   </button>
   <div class="label" id="label" aria-live="polite">Starting microphone</div>
   <div class="caption" id="caption"></div>
+  <div class="links" id="links"></div>
 </main>
 
 <script>
@@ -74,7 +76,7 @@ const MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 const FISH_MODEL = "s2.1-pro-free"; // Fish's free developer-tier model
 const STT_MODEL = "whisper-large-v3-turbo"; // free Groq speech-to-text
 
-const SYSTEM = "You are J.A.R.V.I.S., a calm, witty, highly capable AI butler. Address the user as 'sir' occasionally. You are speaking aloud, so answer in 1-3 short sentences unless asked for detail. Plain spoken text only: no markdown, lists, symbols or emoji.";
+const SYSTEM_BASE = "You are J.A.R.V.I.S., a calm, witty, highly capable AI butler. Address the user as 'sir' occasionally. You are speaking aloud, so answer in 1-3 short sentences unless asked for detail. Plain spoken text only: no markdown, lists, symbols or emoji. You can take real actions with your tools: weather, time, timers, notes, opening links, music, web search, Wikipedia, calculations, volume and screen colour. Use a tool whenever the request needs one, never claim an action you did not perform, and after using a tool reply in one or two short spoken sentences using what it returned.";
 const $ = id => document.getElementById(id);
 const stage = $("stage"), label = $("label"), caption = $("caption");
 const history = [];
@@ -156,23 +158,163 @@ async function transcribe(blob){
   } catch(e){ fail(e.message); }
 }
 
-async function ask(q){
-  caption.textContent = q;
-  history.push({ role:"user", content:q });
-  let reply = "", lastErr = "";
-  for (const model of MODELS){
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method:"POST",
+/* ================= Jarvis abilities (tools the AI can call) ================= */
+const $links = document.getElementById("links");
+const T = (name, description, props = {}, required = []) =>
+  ({ type:"function", function:{ name, description, parameters:{ type:"object", properties:props, required } } });
+const TOOLS = [
+  T("get_time", "Current local date and time."),
+  T("get_weather", "Current weather and 3-day forecast for a city.", { city:{ type:"string" } }, ["city"]),
+  T("search_web", "Search the web for current information, news, scores, prices or anything recent.", { query:{ type:"string" } }, ["query"]),
+  T("wikipedia", "Look up a topic on Wikipedia for a factual summary.", { topic:{ type:"string" } }, ["topic"]),
+  T("open_link", "Open a website or URL for the user.", { url:{ type:"string" }, label:{ type:"string" } }, ["url"]),
+  T("play_music", "Find a song, artist or video on YouTube for the user.", { query:{ type:"string" } }, ["query"]),
+  T("set_timer", "Start a countdown timer or reminder; Jarvis speaks when it ends.", { seconds:{ type:"number" }, label:{ type:"string" } }, ["seconds"]),
+  T("cancel_timers", "Cancel all running timers."),
+  T("save_note", "Save a note or to-do item for the user.", { text:{ type:"string" } }, ["text"]),
+  T("read_notes", "Read back the user's saved notes."),
+  T("clear_notes", "Delete all saved notes."),
+  T("calculate", "Evaluate a maths expression, e.g. 12.5*(3+4)/2.", { expression:{ type:"string" } }, ["expression"]),
+  T("set_volume", "Set Jarvis's speaking volume, 0 to 100.", { percent:{ type:"number" } }, ["percent"]),
+  T("set_color", "Change the interface colour, e.g. red, gold, #00ff7b, or 'default'.", { color:{ type:"string" } }, ["color"]),
+  T("device_status", "Battery level, network and device information."),
+];
+const LABELS = { get_weather:"Checking the weather", search_web:"Searching the web", wikipedia:"Looking that up", open_link:"Opening link",
+  play_music:"Finding music", set_timer:"Setting timer", calculate:"Calculating", device_status:"Running diagnostics" };
+
+let volume = 1, timers = [];
+const wmo = c => c === 0 ? "clear" : c <= 3 ? "partly cloudy" : c <= 48 ? "foggy" : c <= 57 ? "drizzle" : c <= 67 ? "rainy" :
+  c <= 77 ? "snowy" : c <= 82 ? "showers" : c <= 86 ? "snow showers" : "thunderstorms";
+const getJSON = async u => { const r = await fetch(u); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); };
+const notes = () => { try { return JSON.parse(localStorage.getItem("jarvis-notes") || "[]"); } catch(e){ return []; } };
+
+function showLink(url, label){
+  const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = label || url;
+  $links.appendChild(a);
+}
+function openLink(url, label){
+  if (!/^[a-z]+:\/\//i.test(url)) url = "https://" + url;
+  showLink(url, label);
+  let w = null; try { w = window.open(url, "_blank", "noopener"); } catch(e){}
+  return { opened: !!w, note: w ? "Opened in a new tab." : "The browser blocked the pop-up, so the link is on screen for the user to click." };
+}
+// Speak on our own (timers) once Jarvis is free
+async function announce(text){
+  for (let i = 0; i < 40 && (busy || speaking); i++) await new Promise(r => setTimeout(r, 1500));
+  caption.textContent = text; try { await speak(text); } catch(e){}
+}
+
+const ACTIONS = {
+  get_time: () => ({ now: new Date().toLocaleString(undefined, { dateStyle:"full", timeStyle:"short" }), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+
+  async get_weather({ city }){
+    const g = (await getJSON("https://geocoding-api.open-meteo.com/v1/search?count=1&name=" + encodeURIComponent(city))).results;
+    if (!g) return { error: "City not found" };
+    const p = g[0];
+    const w = await getJSON("https://api.open-meteo.com/v1/forecast?latitude=" + p.latitude + "&longitude=" + p.longitude +
+      "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m" +
+      "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=3");
+    return { place: p.name + ", " + (p.country || ""), now:{ tempC: w.current.temperature_2m, feelsLikeC: w.current.apparent_temperature,
+      conditions: wmo(w.current.weather_code), windKmh: w.current.wind_speed_10m, humidityPct: w.current.relative_humidity_2m },
+      next3days: w.daily.time.map((d, i) => ({ date:d, highC:w.daily.temperature_2m_max[i], lowC:w.daily.temperature_2m_min[i],
+        rainChancePct:w.daily.precipitation_probability_max[i], conditions: wmo(w.daily.weather_code[i]) })) };
+  },
+
+  async search_web({ query }){
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", { method:"POST",
       headers:{ "Authorization":"Bearer " + key("groq"), "Content-Type":"application/json" },
-      body: JSON.stringify({ model, temperature: .7, max_completion_tokens: 1000, reasoning_effort: "low",
-        messages: [{ role:"system", content:SYSTEM }, ...history.slice(-12)] })
-    });
-    if (r.ok){ reply = ((await r.json()).choices[0].message.content || "").trim(); if (reply) break; lastErr = "empty reply"; continue; }
+      body: JSON.stringify({ model:"groq/compound-mini", max_completion_tokens: 600,
+        messages:[{ role:"user", content:"Search the web and answer briefly and factually (under 120 words): " + query }] }) });
+    if (!r.ok) return { error: "Web search unavailable (" + r.status + ")" };
+    return { answer: ((await r.json()).choices[0].message.content || "").slice(0, 1500) };
+  },
+
+  async wikipedia({ topic }){
+    const o = await getJSON("https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&format=json&origin=*&search=" + encodeURIComponent(topic));
+    if (!o[1][0]) return { error: "No article found" };
+    const s = await getJSON("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(o[1][0]));
+    showLink(s.content_urls.desktop.page, s.title);
+    return { title: s.title, summary: (s.extract || "").slice(0, 900) };
+  },
+
+  open_link: ({ url, label }) => openLink(url, label),
+  play_music: ({ query }) => openLink("https://www.youtube.com/results?search_query=" + encodeURIComponent(query), "Play: " + query),
+
+  set_timer({ seconds, label }){
+    seconds = Math.max(1, Math.min(86400, Math.round(seconds)));
+    const what = label || "your timer";
+    timers.push(setTimeout(() => announce("Sir, " + what + " is up."), seconds * 1000));
+    return { ok: true, endsInSeconds: seconds };
+  },
+  cancel_timers(){ timers.forEach(clearTimeout); const n = timers.length; timers = []; return { cancelled: n }; },
+
+  save_note({ text }){ const n = notes(); n.push(text); localStorage.setItem("jarvis-notes", JSON.stringify(n)); return { ok: true, total: n.length }; },
+  read_notes: () => ({ notes: notes() }),
+  clear_notes(){ localStorage.removeItem("jarvis-notes"); return { ok: true }; },
+
+  calculate({ expression }){
+    const e = String(expression).replace(/\^/g, "**").replace(/,/g, "");
+    if (!/^[0-9+\-*/().%\s]*$/.test(e)) return { error: "Unsupported expression" };
+    try { return { result: Function('"use strict"; return (' + e + ')')() }; } catch(err){ return { error: "Could not calculate" }; }
+  },
+
+  set_volume({ percent }){ volume = Math.max(0, Math.min(100, percent)) / 100; if (audio) audio.volume = volume; return { volumePercent: Math.round(volume * 100) }; },
+
+  set_color({ color }){
+    const root = document.documentElement.style;
+    if (/^default$/i.test(color)){ root.removeProperty("--cyan"); localStorage.removeItem("jarvis-color"); return { ok: true }; }
+    if (!CSS.supports("color", color)) return { error: "Unknown colour" };
+    root.setProperty("--cyan", color); localStorage.setItem("jarvis-color", color); return { ok: true };
+  },
+
+  async device_status(){
+    let battery = "unknown";
+    try { const b = await navigator.getBattery(); battery = Math.round(b.level * 100) + "%" + (b.charging ? " (charging)" : ""); } catch(e){}
+    const c = navigator.connection || {};
+    return { battery, online: navigator.onLine, connection: c.effectiveType || "unknown", platform: navigator.platform, language: navigator.language };
+  },
+};
+{ const c = localStorage.getItem("jarvis-color"); if (c) document.documentElement.style.setProperty("--cyan", c); }
+
+async function groqChat(messages, withTools){
+  let lastErr = "";
+  for (const model of MODELS){
+    const body = { model, temperature: .7, max_completion_tokens: 1000, reasoning_effort: "low", messages };
+    if (withTools){ body.tools = TOOLS; body.tool_choice = "auto"; }
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", { method:"POST",
+      headers:{ "Authorization":"Bearer " + key("groq"), "Content-Type":"application/json" }, body: JSON.stringify(body) });
+    if (r.ok) return (await r.json()).choices[0].message;
     if (r.status === 401) badKey("groq");
-    lastErr = "Groq " + r.status + " " + (await r.text()).slice(0, 120);
-    if (r.status !== 404 && r.status !== 400) break;   // only try the next model if this one is unavailable
+    lastErr = "Groq " + r.status + " " + (await r.text()).slice(0, 160);
+    if (r.status !== 404 && r.status !== 400) break;   // try the next model only if this one is unavailable or rejected the call
   }
-  if (!reply){ history.pop(); throw new Error(lastErr); }
+  throw new Error(lastErr);
+}
+
+async function ask(q){
+  caption.textContent = q; $links.textContent = "";
+  history.push({ role:"user", content:q });
+  const system = SYSTEM_BASE + " Current date and time: " + new Date().toLocaleString(undefined, { dateStyle:"full", timeStyle:"short" }) + ".";
+  const msgs = [{ role:"system", content:system }, ...history.slice(-12)];
+  let reply = "";
+  try {
+    for (let i = 0; i < 5 && !reply; i++){
+      let m;
+      try { m = await groqChat(msgs, i < 4); }
+      catch(e){ if (i === 0) m = await groqChat(msgs, false); else throw e; }   // if tool calling misfires, fall back to a plain answer
+      if (m.tool_calls && m.tool_calls.length){
+        msgs.push({ role:"assistant", content: m.content || "", tool_calls: m.tool_calls });
+        for (const tc of m.tool_calls){
+          const name = tc.function.name; setState("thinking", LABELS[name] || "Working");
+          let out;
+          try { out = await ACTIONS[name](JSON.parse(tc.function.arguments || "{}")); }
+          catch(err){ out = { error: String(err.message || err) }; }
+          msgs.push({ role:"tool", tool_call_id: tc.id, content: JSON.stringify(out) });
+        }
+      } else reply = (m.content || "").trim();
+    }
+  } catch(e){ history.pop(); throw e; }
+  if (!reply){ history.pop(); throw new Error("No reply"); }
   history.push({ role:"assistant", content:reply });
   caption.textContent = reply;
   await speak(reply);
@@ -206,7 +348,7 @@ async function voiceBlob(text){
 }
 function playBlob(blob){
   return new Promise((res, rej) => {
-    const a = new Audio(URL.createObjectURL(blob)); audio = a;
+    const a = new Audio(URL.createObjectURL(blob)); a.volume = volume; audio = a;
     a.onended = res; a.onerror = () => rej(new Error("Audio playback failed"));
     a.play().catch(err => {
       if (err.name === "NotAllowedError"){ pending = a; setState("speaking", "Press any key to hear Jarvis"); }
